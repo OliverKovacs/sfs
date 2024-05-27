@@ -19,6 +19,7 @@
 #define INODE_COUNT 512 #define BLOCK_COUNT 1900
 
 #define FS_PATH_LEN_MAX 256
+#define FS_NAME_LEN_MAX 64
 
 const size_t MB = 1048576;
 const size_t DISK_SIZE = 1 * MB;
@@ -32,6 +33,8 @@ const size_t INODE_BLOCK_COUNT = 128;
 
 const uint8_t FS_TYPE_FLAG_REG = 1;
 const uint8_t FS_TYPE_FLAG_DIR = 2;
+const uint8_t FS_TYPE_FLAG_LNK = 4;
+const uint8_t FS_TYPE_FLAG_FREE = 128;
 
 typedef enum fs_err {
     FS_SUCCESS = 0,
@@ -221,7 +224,7 @@ int32_t fs_ino_write(fs_fs *fs, uint16_t ino, uint8_t *buffer, size_t size) {
     return size;
 }
 
-void fs_ino_write_cstring(fs_fs *fs, uint16_t ino, const char *string) {
+void fs_ino_write_cstr(fs_fs *fs, uint16_t ino, const char *string) {
     size_t size = _strlen(string);
     fs_ino_write(fs, ino, (uint8_t *)string, size);
 }
@@ -272,6 +275,8 @@ fs_err fs_ino_readdir(fs_fs *fs, uint16_t ino, fs_dir *dir, size_t size) {
 }
 
 void fs_ino_mk_add_name(fs_fs *fs, uint16_t parent_ino, uint16_t ino, const char *name) {
+    // TODO check dup
+
     uint8_t buffer[1000];
     fs_ino_read(fs, parent_ino, buffer, 1000);
     // TODO error handling
@@ -317,18 +322,18 @@ fs_err fs_ino_unlink_name(fs_fs *fs, uint16_t parent_ino, uint16_t ino) {
     return FS_ERROR;
 }
 
-uint16_t fs_ino_mk(fs_fs *fs, uint16_t parent_ino, const char *name, uint8_t type) {
+int32_t fs_ino_mk(fs_fs *fs, uint16_t parent_ino, const char *name, uint8_t type) {
     uint16_t ino = fs->header->ino;
     fs->header->ino++;
     
     if (ino > fs->header->max_ino) {
         puts("ERR no inodes left");
-        return INODE_INVALID;
+        return -ENFILE;
     }
 
     if (!fs_ino_isdir(fs, parent_ino)) {
         puts("ERR can only make file in dir");
-        return INODE_INVALID;
+        return -ENOTDIR;
     }
     
     fs_ino_mk_add_name(fs, parent_ino, ino, name);
@@ -350,14 +355,15 @@ uint16_t fs_ino_mk(fs_fs *fs, uint16_t parent_ino, const char *name, uint8_t typ
     return ino;
 }
 
-uint16_t fs_ino_mkdir(fs_fs *fs, uint16_t parent_ino, const char *name) {
-    uint16_t ino = fs_ino_mk(fs, parent_ino, name, FS_TYPE_FLAG_DIR);
+int32_t fs_ino_mkdir(fs_fs *fs, uint16_t parent_ino, const char *name) {
+    int32_t ino = fs_ino_mk(fs, parent_ino, name, FS_TYPE_FLAG_DIR);
+    if (ino < 0) return ino;
     fs_ino_mk_add_name(fs, ino, ino, ".");
     fs_ino_mk_add_name(fs, ino, parent_ino, "..");
     return ino;
 }
 
-uint16_t fs_ino_mkreg(fs_fs *fs, uint16_t parent_ino, const char *name) {
+uint16_t fs_ino_mknod(fs_fs *fs, uint16_t parent_ino, const char *name) {
     return fs_ino_mk(fs, parent_ino, name, FS_TYPE_FLAG_REG);
 }
 
@@ -419,9 +425,92 @@ uint16_t fs_path_to_ino(fs_fs *fs, const char *path) {
     return INODE_INVALID;
 }
 
+const char *fs_path_get_last_sep(const char *path) {
+    size_t len = _strlen(path);
+    path += len - 1;
+    for (size_t i = 0; i < len; i++) {
+        if (*path == '/') return path;
+        path--;
+    }
+    return NULL;
+}
+
+// /x/y  → /x/
+// /x/y/ → /x/y/
+fs_err fs_path_to_parent_path(const char *path, char *buffer) {
+    size_t len = _strlen(path);
+    if (len > FS_PATH_LEN_MAX) return FS_ERROR;
+
+    _memcpy(buffer, path, len);
+    char *sep = (char *)fs_path_get_last_sep(buffer);
+    if (sep == NULL) return FS_ERROR;
+    *(sep + 1) = '\0';
+    return FS_SUCCESS;
+}
+
+uint16_t fs_path_to_parent_ino(fs_fs *fs, const char *path) {
+    char buffer[FS_PATH_LEN_MAX];
+    fs_err err = fs_path_to_parent_path(path, buffer);
+    if (err != FS_SUCCESS) return INODE_INVALID;
+    return fs_path_to_ino(fs, buffer);
+}
+
+uint16_t fs_ino_get_parent_ino(fs_fs *fs, uint16_t ino) {
+    return fs->inodes[ino].ino;
+}
+
+int32_t fs_ino_to_name(fs_fs *fs, uint16_t ino, char *name) {
+    uint8_t buffer[1000];
+    fs_dir dir = { .buffer = buffer };
+    fs_ino_readdir(fs, fs_ino_get_parent_ino(fs, ino), &dir, 1000);
+
+    fs_dirmem mem;
+    while (fs_dir_member(&dir, &mem)) {
+        if (mem.ino == ino) {
+            _memcpy(name, mem.name, mem.len);
+            return mem.len;
+        };
+        fs_dir_next(&dir);
+    }
+    return -1;
+}
+
+fs_err fs_ino_to_name_cstr(fs_fs *fs, uint16_t ino, char *name) {
+    int32_t len = fs_ino_to_name(fs, ino, name);
+    if (len == -1) return FS_ERROR;
+    *(name + len) = '\0';
+    return FS_SUCCESS;
+}
+
 fs_err fs_ino_to_path(fs_fs *fs, uint16_t ino, char *path) {
-    // TODO implement
-    return FS_ERROR;
+    char buffer[FS_PATH_LEN_MAX];
+    char *ptr = buffer + FS_PATH_LEN_MAX - 1;
+
+    size_t size = 1;
+
+    *ptr = '\0';
+    ptr--;
+
+    char name[FS_NAME_LEN_MAX];
+
+    while (ino != fs->header->root) {
+        int32_t len = fs_ino_to_name(fs, ino, name);
+        if (len < 0) return FS_ERROR;
+
+        size += len + 1;
+
+        ptr -= len;
+        _memcpy(ptr, name, len);
+
+        ptr--;
+        *ptr = '/';
+
+        ino = fs_ino_get_parent_ino(fs, ino);
+    }
+
+    _memcpy(path, ptr, size);
+
+    return FS_SUCCESS;
 }
 
 void fs_init_blocks(fs_fs *fs) {
@@ -509,6 +598,147 @@ int sfs_getattr(const char *path, struct stat *st) {
     return 0;
 }
 
+int sfs_readlink(const char *path, char *buffer, size_t size) {
+    uint16_t ino = fs_path_to_ino(FS, path);
+    fs_ino_to_path(FS, ino, buffer);
+    // TODO error 
+}
+
+int sfs_mknod(const char *path, mode_t mode, dev_t dev) {
+    uint16_t parent_ino = fs_path_to_parent_ino(FS, path);
+    const char *sep = fs_path_get_last_sep(path);
+    const char *name = sep + 1;
+
+    fs_ino_mknod(FS, parent_ino, sep + 1);
+    return 0;
+}
+
+int sfs_mkdir(const char *path, mode_t mode) {
+    uint16_t parent_ino = fs_path_to_parent_ino(FS, path);
+    if (parent_ino == INODE_INVALID) return -ENOENT;
+    const char *sep = fs_path_get_last_sep(path);
+    if (sep == NULL) return -EINVAL;
+    const char *name = sep + 1;
+
+    fs_ino_mkdir(FS, parent_ino, name);
+    return 0;
+}
+
+int sfs_unlink(const char *path) {
+    uint16_t ino = fs_path_to_ino(FS, path);
+    if (ino == INODE_INVALID) return -ENOENT;
+    // TODO improve
+    if (fs_ino_isdir(FS, ino)) return -EISDIR;
+    
+    fs_unlink_raw(FS, ino);
+
+    fs_inode *inode = &FS->inodes[ino];
+    fs_ino_unlink_name(FS, inode->ino, ino);
+    return 0;
+}
+
+int sfs_rmdir(const char *path) {
+    uint16_t ino = fs_path_to_ino(FS, path);
+    if (ino == INODE_INVALID) return -ENOENT;
+    if (!fs_ino_isdir(FS, ino)) return -ENOTDIR;
+    
+    fs_rmdir_raw(FS, ino);
+
+    fs_inode *inode = &FS->inodes[ino];
+    fs_ino_unlink_name(FS, inode->ino, ino);
+    return 0;
+}
+
+int sfs_rename(const char *src, const char *dest) {
+    uint16_t src_ino = fs_path_to_ino(FS, src);
+    if (src_ino == INODE_INVALID) return -ENOENT;
+
+    // case 1 target name explicit
+    uint16_t dest_parent_ino = fs_path_to_parent_ino(FS, dest);
+    if (dest_parent_ino == INODE_INVALID) return -ENOENT;
+
+    const char *sep = fs_path_get_last_sep(dest);
+    if (sep == NULL) return -EINVAL;
+    const char *name = sep + 1;
+
+    fs_inode *inode = &FS->inodes[src_ino];
+    fs_ino_unlink_name(FS, inode->ino, src_ino);
+    inode->ino = dest_parent_ino;
+
+    fs_ino_mk_add_name(FS, inode->ino, src_ino, name);
+    return 0;
+}
+
+int sfs_chown(const char *path, uid_t uid, gid_t gid) {
+    uint16_t ino = fs_path_to_ino(FS, path);
+    if (ino == INODE_INVALID) return -ENOENT;
+    fs_inode *inode = &FS->inodes[ino];
+    inode->uid = uid;
+    inode->gid = gid;
+    return 0;
+}
+
+int sfs_truncate(const char *path, off_t offset) {
+    uint16_t ino = fs_path_to_ino(FS, path);
+    if (ino == INODE_INVALID) return -ENOENT;
+    fs_inode *inode = &FS->inodes[ino];
+
+    // TODO implement
+
+    return 0;
+}
+
+int sfs_link(const char *dest, const char *src) {
+    uint16_t dest_ino = fs_path_to_ino(FS, dest);
+    if (dest_ino == INODE_INVALID) return -ENOENT;
+
+    uint16_t src_parent_ino = fs_path_to_parent_ino(FS, src);
+    if (src_parent_ino == INODE_INVALID) return -ENOENT;
+
+    const char *sep = fs_path_get_last_sep(src);
+    if (sep == NULL) return -EINVAL;
+    const char *name = sep + 1;
+
+    fs_ino_mk_add_name(FS, src_parent_ino, dest_ino, name);
+
+    return 0;
+}
+
+int32_t sfs_read(
+    const char *path, char *buffer,
+    size_t size,
+    off_t offset,
+    struct fuse_file_info *fi
+) {
+    uint16_t ino = fs_path_to_ino(FS, path);
+    if (ino == INODE_INVALID) return -ENOENT;
+    return fs_ino_read(FS, ino, (uint8_t *)buffer, size);
+}
+
+int sfs_write(
+    const char *path,
+    const char *buffer,
+    size_t size,
+    off_t offset,
+    struct fuse_file_info *fi
+) {
+    uint16_t ino = fs_path_to_ino(FS, path);
+    if (ino == INODE_INVALID) return -ENOENT;
+    return fs_ino_write(FS, ino, (uint8_t *)buffer, size);
+}
+
+int sfs_statfs(const char *path, struct statvfs *stfs) {
+    // TODO implement
+
+    stfs->f_blocks = 100000;
+    stfs->f_bfree = 50000;
+    stfs->f_bavail = 50000;
+    stfs->f_files = 100000;
+    stfs->f_ffree = 50000;
+    stfs->f_favail = 50000;
+    return 0;
+}
+
 int sfs_readdir(
     const char *path,
     void *buffer,
@@ -531,75 +761,12 @@ int sfs_readdir(
     return 0;
 }
 
-int sfs_mkdir(const char *path, mode_t mode) {
-    // TODO fix hack
-    // TODO this assumes path doesn't end with /
-    
-    size_t len = _strlen(path);
-
-    char buffer[FS_PATH_LEN_MAX];
-    _memcpy(buffer, path, len);
-    char *ptr = buffer + len;
-    while (*ptr != '/') ptr -= 1;
-    *(ptr + 1) = '\0';
-
-    uint16_t parent_ino = fs_path_to_ino(FS, buffer);
-
-    fs_ino_mkdir(FS, parent_ino, path + (ptr - buffer + 1));
-    return 0;
-}
-
-int sfs_write(
-    const char *path,
-    const char *buffer,
-    size_t size,
-    off_t offset,
-    struct fuse_file_info *fi
-) {
+int sfs_utimens(const char *path, const struct timespec tv[2]) {
     uint16_t ino = fs_path_to_ino(FS, path);
-    if (ino == INODE_INVALID) return -1;
-    
-    return fs_ino_write(FS, ino, (uint8_t *)buffer, size);
-}
-
-int sfs_read(
-    const char *path, char *buffer,
-    size_t size,
-    off_t offset,
-    struct fuse_file_info *fi
-) {
-    uint16_t ino = fs_path_to_ino(FS, path);
-    if (ino == INODE_INVALID) return 1;
-    
-    return fs_ino_read(FS, ino, (uint8_t *)buffer, size);
-}
-
-int sfs_unlink(const char *path) {
-    uint16_t ino = fs_path_to_ino(FS, path);
-    if (ino == INODE_INVALID) return 1;
-    // TODO check if regular file
-    
-    fs_unlink_raw(FS, ino);
-
+    if (ino == INODE_INVALID) return -ENOENT;
     fs_inode *inode = &FS->inodes[ino];
-    fs_ino_unlink_name(FS, inode->ino, ino);
+    inode->time = tv->tv_sec;
     return 0;
-}
-
-int sfs_rmdir(const char *path) {
-    uint16_t ino = fs_path_to_ino(FS, path);
-    if (ino == INODE_INVALID) return 1;
-    
-    fs_rmdir_raw(FS, ino);
-
-    fs_inode *inode = &FS->inodes[ino];
-    fs_ino_unlink_name(FS, inode->ino, ino);
-    return 0;
-}
-
-int sfs_rename(const char *src, const char *dest) {
-    // TODO implement
-    return 1;
 }
 
 void sfs_print_statistics(size_t ino_size, size_t block_size) {

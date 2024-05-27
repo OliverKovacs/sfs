@@ -23,6 +23,5 @@ See `Makefile`.
 - Improve error logging
 - Improve error handling
 - Implement permissions
-- Implement move
-- Implement links
+- Implement file system statistics
 - Support for inlining small files into inode

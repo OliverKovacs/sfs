@@ -1,4 +1,4 @@
-CFLAGS=-I/usr/include/fuse -lfuse -lm -D_FILE_OFFSET_BITS=64 -g
+CFLAGS=-I/usr/include/fuse -lfuse -lm -D_FILE_OFFSET_BITS=64 -g -Wall -Wextra
 MOUNT=mnt
 ARGS=-d -f $(MOUNT)
 
