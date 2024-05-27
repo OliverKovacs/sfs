@@ -7,7 +7,7 @@
 
 static struct fuse_operations myfs_ops = {
     .getattr = sfs_getattr,
-    .readlink = sfs_readlink,
+    // .readlink = sfs_readlink,
     .mknod = sfs_mknod,
     .mkdir = sfs_mkdir,
     .unlink = sfs_unlink,

@@ -31,6 +31,9 @@ const uint16_t INODE_INVALID = -1;
 
 const size_t INODE_BLOCK_COUNT = 128;
 
+const uint16_t FS_MODE_BITS = 9;
+const uint16_t FS_MODE_MASK = 0x1F;
+
 const uint8_t FS_TYPE_FLAG_REG = 1;
 const uint8_t FS_TYPE_FLAG_DIR = 2;
 const uint8_t FS_TYPE_FLAG_LNK = 4;
@@ -45,14 +48,18 @@ typedef struct fs_inode {
     uint16_t ino;
     uint8_t uid;
     uint8_t gid;
-    uint8_t type;
-    uint8_t mode;
+    uint16_t type_mode;
+    uint16_t refs;
     uint32_t size;
     uint32_t time;
-    uint16_t block;
+    uint16_t block_0;
+    uint16_t block_1;
+    uint16_t block_2;
+    uint16_t block_3;
     uint16_t block_p;
     uint16_t block_pp;
-    uint16_t block_ppp;
+    uint16_t block_ppp0;
+    uint16_t block_ppp1;
 } fs_inode;
 
 typedef struct fs_block {
@@ -120,8 +127,16 @@ uint32_t fs_ino_size(fs_fs *fs, uint16_t ino) {
     return fs->inodes[ino].size;
 }
 
+uint16_t fs_ino_type(fs_fs *fs, uint16_t ino) {
+    return fs->inodes[ino].type_mode >> FS_MODE_BITS;
+}
+
+uint16_t fs_ino_mode(fs_fs *fs, uint16_t ino) {
+    return fs->inodes[ino].type_mode & FS_MODE_MASK;
+}
+
 bool fs_ino_isdir(fs_fs *fs, uint16_t ino) {
-    return fs->inodes[ino].type & FS_TYPE_FLAG_DIR;
+    return fs_ino_type(fs, ino) & FS_TYPE_FLAG_DIR;
 }
 
 void print_header(fs_header *header) {
@@ -151,7 +166,7 @@ void fs_ino_enumerate_blocks(
     if (left == 0) return;
     
     size_t i = 0;
-    if(!callback(&inode->block, i, args)) return;
+    if(!callback(&inode->block_0, i, args)) return;
     left -= BLOCK_SIZE;
     i++;
 
@@ -345,12 +360,17 @@ int32_t fs_ino_mk(fs_fs *fs, uint16_t parent_ino, const char *name, uint8_t type
     inode->ino = parent_ino;
     inode->uid = 0;
     inode->gid = 0;
-    inode->type = type;
-    inode->mode = 0;
+    inode->type_mode = (type << FS_MODE_BITS) | 0;
+    inode->refs = 0;
     inode->time = 0;
-    inode->block = BLOCK_INVALID;
+    inode->block_0 = BLOCK_INVALID;
+    inode->block_1 = BLOCK_INVALID;
+    inode->block_2 = BLOCK_INVALID;
+    inode->block_3 = BLOCK_INVALID;
     inode->block_p = BLOCK_INVALID;
     inode->block_pp = BLOCK_INVALID;
+    inode->block_ppp0 = BLOCK_INVALID;
+    inode->block_ppp1 = BLOCK_INVALID;
 
     return ino;
 }
@@ -455,64 +475,6 @@ uint16_t fs_path_to_parent_ino(fs_fs *fs, const char *path) {
     return fs_path_to_ino(fs, buffer);
 }
 
-uint16_t fs_ino_get_parent_ino(fs_fs *fs, uint16_t ino) {
-    return fs->inodes[ino].ino;
-}
-
-int32_t fs_ino_to_name(fs_fs *fs, uint16_t ino, char *name) {
-    uint8_t buffer[1000];
-    fs_dir dir = { .buffer = buffer };
-    fs_ino_readdir(fs, fs_ino_get_parent_ino(fs, ino), &dir, 1000);
-
-    fs_dirmem mem;
-    while (fs_dir_member(&dir, &mem)) {
-        if (mem.ino == ino) {
-            _memcpy(name, mem.name, mem.len);
-            return mem.len;
-        };
-        fs_dir_next(&dir);
-    }
-    return -1;
-}
-
-fs_err fs_ino_to_name_cstr(fs_fs *fs, uint16_t ino, char *name) {
-    int32_t len = fs_ino_to_name(fs, ino, name);
-    if (len == -1) return FS_ERROR;
-    *(name + len) = '\0';
-    return FS_SUCCESS;
-}
-
-fs_err fs_ino_to_path(fs_fs *fs, uint16_t ino, char *path) {
-    char buffer[FS_PATH_LEN_MAX];
-    char *ptr = buffer + FS_PATH_LEN_MAX - 1;
-
-    size_t size = 1;
-
-    *ptr = '\0';
-    ptr--;
-
-    char name[FS_NAME_LEN_MAX];
-
-    while (ino != fs->header->root) {
-        int32_t len = fs_ino_to_name(fs, ino, name);
-        if (len < 0) return FS_ERROR;
-
-        size += len + 1;
-
-        ptr -= len;
-        _memcpy(ptr, name, len);
-
-        ptr--;
-        *ptr = '/';
-
-        ino = fs_ino_get_parent_ino(fs, ino);
-    }
-
-    _memcpy(path, ptr, size);
-
-    return FS_SUCCESS;
-}
-
 void fs_init_blocks(fs_fs *fs) {
     size_t size = fs->header->total_block_count - fs->header->inode_block_count;
 
@@ -550,12 +512,17 @@ void create_empty_fs(fs_fs *fs, fs_block *raw, size_t size) {
     root->ino = 0;
     root->uid = 100;
     root->gid = 100;
-    root->type = FS_TYPE_FLAG_DIR;
-    root->size = 0;
+    root->type_mode = (FS_TYPE_FLAG_DIR << FS_MODE_BITS) | 0;
+    root->refs = 0;
     root->time = 0;
-    root->block = BLOCK_INVALID;
+    root->block_0 = BLOCK_INVALID;
+    root->block_1 = BLOCK_INVALID;
+    root->block_2 = BLOCK_INVALID;
+    root->block_3 = BLOCK_INVALID;
     root->block_p = BLOCK_INVALID;
     root->block_pp = BLOCK_INVALID;
+    root->block_ppp0 = BLOCK_INVALID;
+    root->block_ppp1 = BLOCK_INVALID;
 
     fs_ino_mk_add_name(fs, 0, 0, ".");
     fs_ino_mk_add_name(fs, 0, 0, "..");
@@ -599,9 +566,7 @@ int sfs_getattr(const char *path, struct stat *st) {
 }
 
 int sfs_readlink(const char *path, char *buffer, size_t size) {
-    uint16_t ino = fs_path_to_ino(FS, path);
-    fs_ino_to_path(FS, ino, buffer);
-    // TODO error 
+    // TODO implement
 }
 
 int sfs_mknod(const char *path, mode_t mode, dev_t dev) {
