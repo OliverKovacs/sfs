@@ -5,7 +5,7 @@
 
 #include "sfs.h"
 
-static struct fuse_operations myfs_ops = {
+static struct fuse_operations sfs_ops = {
     .getattr = sfs_getattr,
     // .readlink = sfs_readlink,
     .mknod = sfs_mknod,
@@ -36,6 +36,10 @@ void save_disk(char *path, char *buffer) {
 }
  
 int main(int argc, char **argv) {
+    UNUSED(argc);
+    UNUSED(argv);
+    UNUSED(sfs_ops);
+
     // for (size_t i = 1; i <= 8; i *= 2) {
     //     sfs_print_statistics(2, i * 64);
     //     sfs_print_statistics(4, i * 64);
@@ -45,30 +49,61 @@ int main(int argc, char **argv) {
     load_disk("./disk", buffer);
       
     fs_fs *fs = (fs_fs *)malloc(sizeof(fs_fs));
-    create_empty_fs(fs, (fs_block *)buffer, DISK_SIZE / BLOCK_SIZE);
+    fs_create(fs, (fs_block *)buffer, DISK_SIZE / BLOCK_SIZE);
     FS = fs;
 
     print_header(fs->header);
 
-    fs_ino_mkdir(fs, 0, "mydir");
-    uint16_t mydir2 = fs_ino_mkdir(fs, 0, "mydir2");
-    uint16_t mydir3 = fs_ino_mkdir(fs, mydir2, "mydir3");
+    fs_ino_mkdir(fs, fs->header->root_ino, "mydir");
+    uint16_t mydir2 = fs_ino_mkdir(fs, fs->header->root_ino, "mydir2");
 
-    uint16_t abc = fs_ino_mknod(fs, 0, "abc.txt");
+    uint16_t mydir3 = fs_ino_mkdir(fs, mydir2, "mydir3");
+    UNUSED(mydir3);
+
+    uint16_t abc = fs_ino_mknod(fs, fs->header->root_ino, "abc.txt");
     fs_ino_write_cstr(fs, abc, "Hello world! :)\n");
 
-    char b1[1000];
-    fs_ino_to_name_cstr(fs, mydir3, b1);
-    printf("name: '%s'\n", b1);
+    uint16_t xyz = fs_ino_mknod(fs, fs->header->root_ino, "xyz");
+    fs_ino_write_cstr(fs, xyz, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    " :)\n");
 
-    char b[1000];
-    fs_ino_to_path(fs, mydir3, b);
-    printf("path: '%s'\n", b);
+    printf("ino: %d\n", abc);
+    printf("refs: %d\n", (&fs->inodes[abc])->refs);
 
-    uint16_t src_parent_ino = fs_path_to_parent_ino(FS, "/abc");
-    printf("%d\n", src_parent_ino);
+    print_header(fs->header);
+    print_debug(fs);
+
+    uint8_t b[1000];
+    int32_t out = fs_ino_read(fs, mydir2, b, 30);
+    printf("out: %d\n", out);
+    printf("buf: '");
+    for (size_t i = 0; i < 30; i++) {
+        printf("%c", b[i]);
+    }
+    puts("'");
+
+
+    fs_dir dir = { 1000, b };
+    fs_ino_readdir(fs, mydir2, &dir, 1000);
+
+    printf("dir size: %d\n", dir.size);
+
+    fs_dentry *dentry = fs_dir_entry(&dir);
+    while (dentry != NULL) {
+        printf("dentry: %d %d %s\n", dentry->ino, dentry->len, &dentry->name);
+        dentry = fs_dir_next(&dir);
+    }
 
     save_disk("./disk", buffer);
+    puts("saved!");
  
     // int32_t i;
     // get the device or image filename from arguments
@@ -79,5 +114,5 @@ int main(int argc, char **argv) {
     //   argc--;
     // }
 
-    return fuse_main(argc, argv, &myfs_ops, NULL);
+    return fuse_main(argc, argv, &sfs_ops, NULL);
 }
