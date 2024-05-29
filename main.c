@@ -5,6 +5,26 @@
 
 #include "sfs.h"
 
+void print_statistics(size_t ino_size, size_t block_size) {
+    printf("ino size:           %4ld bit / %3ld B\n", ino_size * 8, ino_size);
+    printf("inode size:         %4ld bit / %3ld B\n", ino_size * 8 * 8, ino_size * 8);
+    printf("block size:         %4ld bit / %3ld B\n", block_size * 8, block_size);
+
+    size_t max_inodes = (size_t)pow(256, ino_size);
+    printf("max inodes:         %16ld\n", max_inodes);
+    printf("max fs size:        %13ld MB\n", max_inodes * block_size / MB);
+
+    size_t bpb = block_size / ino_size;
+    size_t max_blk = (ino_size == 2)
+        ? (bpb - 3) + bpb + (size_t)pow(bpb, 2) + (size_t)pow(bpb, 3)
+        : 1 + bpb + (size_t)pow(bpb, 2) + (size_t)pow(bpb, 3);
+
+    printf("max blk/blk:        %16ld\n", bpb);
+    printf("max file blks:        %14ld\n", max_blk);
+    printf("max file size:        %11ld MB\n", max_blk * block_size / MB);
+    puts("");
+}
+
 static struct fuse_operations sfs_ops = {
     .getattr = sfs_getattr,
     // .readlink = sfs_readlink,
@@ -14,6 +34,7 @@ static struct fuse_operations sfs_ops = {
     .rmdir = sfs_rmdir,
     .rename = sfs_rename,
     .link = sfs_link,
+	.chmod = sfs_chmod,
     .chown = sfs_chown,
     .truncate = sfs_truncate,
     .read = sfs_read,
@@ -54,16 +75,16 @@ int main(int argc, char **argv) {
 
     print_header(fs->header);
 
-    fs_ino_mkdir(fs, fs->header->root_ino, "mydir");
-    uint16_t mydir2 = fs_ino_mkdir(fs, fs->header->root_ino, "mydir2");
+    fs_ino_mkdir(fs, fs->header->root_ino, "mydir", 0);
+    uint16_t mydir2 = fs_ino_mkdir(fs, fs->header->root_ino, "mydir2", 0);
 
-    uint16_t mydir3 = fs_ino_mkdir(fs, mydir2, "mydir3");
+    uint16_t mydir3 = fs_ino_mkdir(fs, mydir2, "mydir3", 0);
     UNUSED(mydir3);
 
-    uint16_t abc = fs_ino_mknod(fs, fs->header->root_ino, "abc.txt");
+    uint16_t abc = fs_ino_mknod(fs, fs->header->root_ino, "abc.txt", S_IFREG >> 3);
     fs_ino_write_cstr(fs, abc, "Hello world! :)\n");
 
-    uint16_t xyz = fs_ino_mknod(fs, fs->header->root_ino, "xyz");
+    uint16_t xyz = fs_ino_mknod(fs, fs->header->root_ino, "xyz", S_IFREG >> 3);
     fs_ino_write_cstr(fs, xyz, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"

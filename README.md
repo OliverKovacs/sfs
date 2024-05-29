@@ -22,6 +22,4 @@ See `Makefile`.
 - Improve inode block references
 - Improve error logging
 - Improve error handling
-- Implement permissions
-- Implement file system statistics
 - Support for inlining small files into inode
