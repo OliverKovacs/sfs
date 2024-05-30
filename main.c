@@ -4,30 +4,11 @@
 #include <fuse.h>
 
 #include "sfs.h"
-
-void print_statistics(size_t ino_size, size_t block_size) {
-    printf("ino size:           %4ld bit / %3ld B\n", ino_size * 8, ino_size);
-    printf("inode size:         %4ld bit / %3ld B\n", ino_size * 8 * 8, ino_size * 8);
-    printf("block size:         %4ld bit / %3ld B\n", block_size * 8, block_size);
-
-    size_t max_inodes = (size_t)pow(256, ino_size);
-    printf("max inodes:         %16ld\n", max_inodes);
-    printf("max fs size:        %13ld MB\n", max_inodes * block_size / MB);
-
-    size_t bpb = block_size / ino_size;
-    size_t max_blk = (ino_size == 2)
-        ? (bpb - 3) + bpb + (size_t)pow(bpb, 2) + (size_t)pow(bpb, 3)
-        : 1 + bpb + (size_t)pow(bpb, 2) + (size_t)pow(bpb, 3);
-
-    printf("max blk/blk:        %16ld\n", bpb);
-    printf("max file blks:        %14ld\n", max_blk);
-    printf("max file size:        %11ld MB\n", max_blk * block_size / MB);
-    puts("");
-}
+#include "debug.h"
 
 static struct fuse_operations sfs_ops = {
     .getattr = sfs_getattr,
-    // .readlink = sfs_readlink,
+    .readlink = sfs_readlink,
     .mknod = sfs_mknod,
     .mkdir = sfs_mkdir,
     .unlink = sfs_unlink,
@@ -95,6 +76,8 @@ int main(int argc, char **argv) {
     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
     " :)\n");
+
+    // fs_ino_truncate(fs, xyz, 20);
 
     printf("ino: %d\n", abc);
     printf("refs: %d\n", (&fs->inodes[abc])->refs);

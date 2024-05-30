@@ -19,7 +19,5 @@ See `Makefile`.
 
 ## Todo
 
-- Improve inode block references
-- Improve error logging
 - Improve error handling
 - Support for inlining small files into inode
