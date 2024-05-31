@@ -8,7 +8,10 @@ run: main
 
 debug: main
 	valgrind --leak-check=full ./$^ $(ARGS)
-	
+
+test: main
+	./test.sh
+
 main: main.c sfs.h
 	$(CC) $^ $(CFLAGS) -o $@
 

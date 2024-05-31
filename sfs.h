@@ -15,29 +15,33 @@
 #include <time.h>
 
 #define UNUSED(x) (void)(x)
-
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
 
-// improve if ino 0 set error
-#define CHECK_INO(ino) if (ino == INO_INVALID || ino < 0) return ino;
-#define ERR(term)           \
-{                           \
-    int32_t err = (term);   \
+#define SUCCESS 0
+
+#define FS_BLOCK_SIZE 512
+#define FS_DIR_MAX 1024
+#define FS_PATH_LEN_MAX 256
+#define FS_NAME_LEN_MAX 64
+#define FS_BLOCK_POINTERS 6
+
+#define CHECK_INO(ino)                  \
+if (ino < 0) return ino;                \
+if (ino == INO_INVALID) return -EINVAL;
+
+#define ERR(term)               \
+{                               \
+    int32_t err = (term);       \
     if (err < 0) return err;    \
 }
 
+#define READDIR(fs, ino)                        \
+uint8_t buffer[FS_DIR_MAX];                     \
+fs_dir dir = { .buffer = buffer };              \
+ERR(fs_ino_readdir(fs, ino, &dir, FS_DIR_MAX));
+
 #define CALL(term) if (!(term)) return;
-
-#define SUCCESS 0
-
-#define BLOCK_SIZE 512
-#define INODE_COUNT 512 #define BLOCK_COUNT 1900
-
-#define FS_PATH_LEN_MAX 256
-#define FS_NAME_LEN_MAX 64
-#define FS_DIR_MAX 1024
-#define BLOCK_POINTERS 6
 
 const size_t MB = 1048576;
 const size_t DISK_SIZE = 1 * MB;
@@ -55,14 +59,14 @@ typedef struct fs_inode {
     uint16_t refs;
     uint32_t size;
     uint32_t time;
-    uint16_t block[BLOCK_POINTERS];
+    uint16_t block[FS_BLOCK_POINTERS];
     uint16_t block_p;
     uint16_t block_pp;
 } fs_inode;
 
 typedef struct fs_block {
     union {
-        uint8_t bytes[BLOCK_SIZE];
+        uint8_t bytes[FS_BLOCK_SIZE];
         struct {
             uint16_t next;
         } free;
@@ -124,6 +128,13 @@ typedef struct fs_ino_rw_cb_args {
     int32_t output;
 } fs_ino_rw_cb_args;
 
+typedef struct fs_ino_trunc_cb_args {
+    fs_fs *fs;
+    int32_t old_size;
+    int32_t new_size;
+    int32_t output;
+} fs_ino_trunc_cb_args;
+
 fs_fs *FS;
 
 static inline fs_inode *fs_get_inode(fs_fs *fs, uint16_t ino) {
@@ -138,7 +149,7 @@ static inline bool fs_ino_isdir(fs_fs *fs, uint16_t ino) {
 
 void fs_ino_enumerate_blocks(
     fs_fs *fs,
-    uint8_t ino,
+    uint16_t ino,
     bool(*callback)(uint16_t *, fs_index, void *),
     void *args
 ) {
@@ -146,7 +157,7 @@ void fs_ino_enumerate_blocks(
     fs_inode *inode = fs_get_inode(fs, ino);
     
     uint32_t i = 0;
-    while (i < BLOCK_POINTERS) {
+    while (i < FS_BLOCK_POINTERS) {
         CALL(callback(&inode->block[i], (fs_index){ 0, 0, i }, args));
         i++;
     }
@@ -165,7 +176,6 @@ void fs_ino_enumerate_blocks(
     uint16_t *ppblock = (uint16_t *)&fs->blocks[inode->block_pp];
 
     for (size_t j = 0; j < fs->header->blockp_len; j++) {
-
         CALL(callback(&ppblock[j], (fs_index){ 1, 0, i }, args));
         uint16_t *pblock = (uint16_t *)&fs->blocks[ppblock[j]];
 
@@ -203,13 +213,6 @@ void fs_free_block(fs_fs *fs, uint16_t blk) {
     fs->header->blocks--;
 }
 
-typedef struct fs_ino_trunc_cb_args {
-    fs_fs *fs;
-    int32_t old_size;
-    int32_t new_size;
-    int32_t output;
-} fs_ino_trunc_cb_args;
-
 // TODO improve
 bool fs_ino_truncate_cb(uint16_t *block, fs_index i, void *vargs) {
     printf("cb-trunc %d %d\n", *block, i.index);
@@ -222,9 +225,10 @@ bool fs_ino_truncate_cb(uint16_t *block, fs_index i, void *vargs) {
     if (old_left > 0) {
         if (new_left > 0) {
             if (i.pre | i.post) return true;
-            int32_t size = args->fs->header->block_size - old_left;
-            if (size > 0)
-                _memset(&args->fs->blocks[*block].bytes + old_left + 1, 0, size - 1);   // why off by one?
+            // TODO investigate
+            // int32_t size = args->fs->header->block_size - old_left;
+            // if (size > 0)
+            //     _memset(&args->fs->blocks[*block].bytes + old_left + 1, 0, size - 1);   // why off by one?
         }
         else {
             // free
@@ -376,18 +380,16 @@ void fs_ino_refs_dec(fs_fs *fs, uint16_t ino) {
 }
 
 int32_t fs_ino_link(fs_fs *fs, uint16_t parent_ino, uint16_t ino, const char *name) {
-    uint8_t buffer[FS_DIR_MAX];
-    fs_dir dir = { .buffer = buffer };
-    ERR(fs_ino_readdir(fs, parent_ino, &dir, FS_DIR_MAX));
+    READDIR(fs, parent_ino);
 
     fs_dir tmp = { dir.size, dir.buffer };
     fs_dentry *res = fs_dir_search(&tmp, name);
     if (res != NULL) return -EEXIST;
 
-    size_t size = dir.size;
+    int32_t size = dir.size;
     fs_dentry *new_dentry = (fs_dentry *)(dir.buffer + size);
 
-    size_t len = _strlen(name);
+    int32_t len = _strlen(name);
     new_dentry->ino = ino;
     new_dentry->len = len;
     _memcpy(&new_dentry->name, name, len + 1);
@@ -399,15 +401,12 @@ int32_t fs_ino_link(fs_fs *fs, uint16_t parent_ino, uint16_t ino, const char *na
 }
 
 int32_t fs_ino_unlink(fs_fs *fs, uint16_t parent_ino, const char *name) {
-    uint8_t buffer[FS_DIR_MAX];
-    fs_dir dir = { .buffer = buffer };
-    ERR(fs_ino_readdir(fs, parent_ino, &dir, FS_DIR_MAX));
+    READDIR(fs, parent_ino);
    
     size_t size = fs_get_inode(fs, parent_ino)->size;
     
     fs_dentry *dentry = fs_dir_search(&dir, name);
     if (dentry == NULL) return -ENOENT;
-    if (fs_ino_isdir(FS, dentry->ino)) return -EISDIR;
 
     uint8_t *buf = dir.buffer;
     uint16_t len = dentry->len;
@@ -431,7 +430,7 @@ void fs_init_inode(fs_fs *fs, uint16_t ino, uint16_t mode) {
     inode->mode = mode;
     inode->refs = 0;
     inode->time = time(NULL);
-    for (size_t i = 0; i < BLOCK_POINTERS; i++) {
+    for (size_t i = 0; i < FS_BLOCK_POINTERS; i++) {
         inode->block[i] = BLK_INVALID;
     }
     inode->block_p = BLK_INVALID;
@@ -464,19 +463,14 @@ int32_t fs_ino_mknod(fs_fs *fs, uint16_t parent_ino, const char *name, uint16_t 
 
 int32_t fs_name_to_ino(fs_fs *fs, uint16_t ino, const char *name) {
     if (*name == '\0') return ino;
-
-    uint8_t buffer[FS_DIR_MAX];
-    fs_dir dir = { .buffer = buffer };
-    ERR(fs_ino_readdir(fs, ino, &dir, FS_DIR_MAX));
-
+    
+    READDIR(fs, ino);
     fs_dentry *dentry = fs_dir_search(&dir, name);
     if (dentry == NULL) return -ENOENT;
     return dentry->ino;
 }
 
-int32_t fs_path_to_parent_ino(fs_fs *fs, const char *path) {
-    int32_t ino = fs->header->root_ino;
-
+int32_t fs_path_to_parent_ino_rel(fs_fs *fs, const char *path, int32_t ino) {
     char name[FS_NAME_LEN_MAX];
     if (*path == '/') path++;
 
@@ -493,6 +487,10 @@ int32_t fs_path_to_parent_ino(fs_fs *fs, const char *path) {
     return ino;
 }
 
+int32_t fs_path_to_parent_ino(fs_fs *fs, const char *path) {
+    return fs_path_to_parent_ino_rel(fs, path, fs->header->root_ino);
+}
+
 const char *fs_path_get_name(const char *path) {
     size_t len = _strlen(path);
     for (const char *ptr = path + len - 1; ptr >= path; ptr--) {
@@ -502,7 +500,7 @@ const char *fs_path_get_name(const char *path) {
 }
 
 int32_t fs_path_to_ino_rel(fs_fs *fs, const char *path, uint16_t ino) {
-    int32_t parent_ino = fs_path_to_parent_ino(fs, path);
+    int32_t parent_ino = fs_path_to_parent_ino_rel(fs, path, ino);
     CHECK_INO(parent_ino);
 
     const char *name = fs_path_get_name(path);
@@ -513,12 +511,7 @@ int32_t fs_path_to_ino_rel(fs_fs *fs, const char *path, uint16_t ino) {
 
 int32_t fs_path_to_ino(fs_fs *fs, const char *path) {
     if (*path != '/') return -EINVAL;
-
-    if (_strlen(path) > FS_PATH_LEN_MAX) return -ENAMETOOLONG;
-    char buffer[FS_PATH_LEN_MAX];
-    _memcpy(buffer, path, FS_PATH_LEN_MAX);
-
-    return fs_path_to_ino_rel(fs, buffer, fs->header->root_ino);
+    return fs_path_to_ino_rel(fs, path, fs->header->root_ino);
 }
 
 void fs_init_blocks(fs_fs *fs) {
@@ -624,7 +617,7 @@ int32_t sfs_mknod(const char *path, mode_t mode, dev_t dev) {
     const char *name = fs_path_get_name(path);
     if (name == NULL) return -EINVAL;
 
-    int32_t file_mode = fs_mode_to_sfs(mode & (S_IRWXU | S_IRWXG | S_IRWXO) | S_IFREG);
+    int32_t file_mode = fs_mode_to_sfs((mode & (S_IRWXU | S_IRWXG | S_IRWXO)) | S_IFREG);
     ERR(fs_ino_mknod(FS, parent_ino, name, file_mode));
     return SUCCESS;
 }
@@ -645,6 +638,10 @@ int32_t sfs_mkdir(const char *path, mode_t mode) {
 int32_t sfs_unlink(const char *path) {
     int32_t parent_ino = fs_path_to_parent_ino(FS, path);
     CHECK_INO(parent_ino);
+
+    int32_t ino = fs_path_to_ino(FS, path);
+    CHECK_INO(ino);
+    if (fs_ino_isdir(FS, ino)) return -EISDIR;
     
     const char *name = fs_path_get_name(path);
     if (name == NULL) return -EINVAL;
@@ -659,11 +656,17 @@ int32_t sfs_rmdir(const char *path) {
 
     const char *name = fs_path_get_name(path);
     if (name == NULL) return -EINVAL; 
+    
+    READDIR(FS, ino);
+    fs_dentry *dentry = fs_dir_entry(&dir);
+    while (dentry != NULL) {
+        if (_strcmp(&dentry->name, ".") && _strcmp(&dentry->name, "..")) return -ENOTEMPTY;
+        dentry = fs_dir_next(&dir);
+    }
 
-    fs_inode *inode = fs_get_inode(FS, ino);
-    if (inode->size != 0) return -ENOTEMPTY;
-
-    return fs_ino_unlink(FS, inode->ino, name);
+    int32_t parent_ino = fs_path_to_parent_ino(FS, path);
+    CHECK_INO(parent_ino);
+    return fs_ino_unlink(FS, parent_ino, name);
 }
 
 int32_t sfs_rename(const char *src, const char *dest) {
@@ -748,7 +751,7 @@ int32_t sfs_write(
     UNUSED(offset);
     UNUSED(fi);
 
-    uint32_t ino = fs_path_to_ino(FS, path);
+    int32_t ino = fs_path_to_ino(FS, path);
     CHECK_INO(ino);
     return fs_ino_write(FS, ino, buffer, size);
 }
@@ -770,7 +773,7 @@ int32_t sfs_statfs(const char *path, struct statvfs *stfs) {
 
 int32_t sfs_readdir(
     const char *path,
-    void *buffer,
+    void *b,
     fuse_fill_dir_t filler,
     off_t offset,
     struct fuse_file_info *fi
@@ -780,14 +783,11 @@ int32_t sfs_readdir(
 
     int32_t ino = fs_path_to_ino(FS, path);
     CHECK_INO(ino);
-                                        
-    uint8_t buf[FS_DIR_MAX];
-    fs_dir dir = { .buffer = buf };
-    ERR(fs_ino_readdir(FS, ino, &dir, FS_DIR_MAX));
 
+    READDIR(FS, ino);
     fs_dentry *dentry = fs_dir_entry(&dir);
     while (dentry != NULL) {
-        filler(buffer, &dentry->name, NULL, 0);
+        filler(b, &dentry->name, NULL, 0);
         dentry = fs_dir_next(&dir);
     }
     return SUCCESS;
